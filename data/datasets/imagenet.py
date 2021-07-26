@@ -4,10 +4,8 @@ from tqdm import tqdm
 import numpy as np
 import random
 
-from data.data_utils import read_image, get_random_idx
+from data.data_utils import read_image, get_random_idx, corrupt_label
 
-# from param import args
-# imagenet_dir = args.imagenet_dir
 
 def check_subcats(folder_dirs):
     sign = True
@@ -35,7 +33,7 @@ def subcategories_prepare(imagenet_dir, subcats_file='./data_files/subcats/image
 def label_prepare(imagenet_dir, category_folders, isSubData=False):
     folder2label = {}
 
-    if not isSubData:
+    if isSubData:
         folder2label = {category_folders[i]:i  for i in range(len(category_folders))}
     else:
         dict_train_labels_path = os.path.join(imagenet_dir, 'imagenet2012_train_labels.json')
@@ -53,7 +51,7 @@ def assert_data_dir(data_file):
         os.makedirs(data_dir)
 
 
-def load_subimagenet(imagenet_dir, dict_no, data_name='imagenet', data_file='./data_files/data_cache/subimagenet.npz'):
+def load_subimagenet(imagenet_dir, dict_no, noise_rate=0., data_name='imagenet', data_file='./data_files/data_cache/subimagenet.npz'):
     if os.path.exists(data_file):
         print('loading subimagenet from {}'.format(data_file))
         data = np.load(data_file)
@@ -78,7 +76,7 @@ def load_subimagenet(imagenet_dir, dict_no, data_name='imagenet', data_file='./d
             targets += [folder2label[folder_name]] * len(img_names)
             print(len(targets))
 
-        images = np.array(images)  
+        images = np.array(images)
         targets = np.array(targets)
         
         assert_data_dir(data_file)
@@ -98,7 +96,11 @@ def load_subimagenet(imagenet_dir, dict_no, data_name='imagenet', data_file='./d
     y_train = targets[train_idxs].flatten()
     y_test = targets[test_idxs].flatten()
 
-    return (x_train, y_train), (x_valid, y_valid), (x_test, y_test)
+    if noise_rate > 0:
+        y_train, noise_idx = corrupt_label(y_train, noise_rate)
+    else:
+        noise_idx = np.array([])
+    return (x_train, y_train, noise_idx), (x_valid, y_valid), (x_test, y_test)
 
 
 # def load_subvalid():

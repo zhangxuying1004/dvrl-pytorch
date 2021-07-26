@@ -1,54 +1,60 @@
-from data.dataset import DVDataset
-from data.transforms import build_transforms
+import os
+import json
+import numpy as np
+
 from models.dvrl import DVRL
-from utils import get_model_params
+from models.evaluator import Evaluator
+from utils import get_model_params, load_dataset
+from visualize import remove_high_low
 from param import args
 
-from torch.utils.data import DataLoader
+
+def data_valuate(file_name, dvrl_instance, cifar10_train, file_dir='./data_values'):
+    if os.path.exists(os.path.join(file_dir, file_name)):
+        dve_out = json.load(open(os.path.join(file_dir, file_name), 'r'))
+        return np.array(dve_out)
+
+    print('save data values')
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
+    data_values = dvrl_instance.get_data_values(cifar10_train)
+    dvrl_out = [str(data_values[i]) for i in range(data_values.shape[0])]
+    json.dump(dvrl_out, open(os.path.join(file_dir, file_name), 'w'), indent=4)
+
+    return data_values
 
 
-def test():
-    train_transforms = build_transforms(isTrain=True)
-
-    cifar10_train = DVDataset(args.cifar10_dir, 'cifar10', dict_no=args.dict_no, data_split='train', trasnform=train_transforms)
-    # imagenet_train = DVDataset(args.imagenet_dir, 'imagenet', dict_no=args.dict_no, data_split='train', trasnform=train_transforms)
-    dataset = cifar10_train
-    # dataset = imagenet_train
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=10
-    )
-    for x, y in dataloader:
-        
-        print(x.shape)
-        print(y)
-        print(y.shape)
-        idx = [1, 2, 5]
-        mini_x = x[idx]
-        print(mini_x.shape)
-        break
+def visualize_values(dve_out, train_dataset, valid_dataset, test_dataset, noise_rate, figure_name='cifar10'):
+    eval_model = Evaluator()
+    if not os.path.exists('./visual_files'):
+        os.mkdir('./visual_files')
+    temp_output = remove_high_low(dve_out, eval_model, train_dataset, valid_dataset, test_dataset, plot=True, data_name=figure_name)
+    json.dump(temp_output, open('./visual_files/{}_temp_output.json'.format(figure_name), 'w'), indent=4)
 
 
-def main():
-    # load dataset
-    train_transforms = build_transforms(isTrain=True)
-    infer_transforms = build_transforms(isTrain=False)
-    cifar10_train = DVDataset(args.cifar10_dir, 'cifar10', dict_no=args.dict_no, data_split='train', trasnform=train_transforms)
-    cifar10_valid = DVDataset(args.cifar10_dir, 'cifar10', dict_no=args.dict_no, data_split='valid', trasnform=infer_transforms)
-    # cifar10_test = DVDataset(args.cifar10_dir, 'cifar10', dict_no=args.dict_no, data_split='test', trasnform=infer_transforms)
-    # imagenet_train = DVDataset(args.imagenet_dir, 'imagenet', dict_no=args.dict_no, data_split='train', trasnform=train_transforms)
-
-    # build model
+def main(args):
+    # 1 数据准备
+    train_dataset, valid_dataset, test_dataset = load_dataset(data_name=args.data_name)
+    # 2 模型准备
     dict_dvrl = get_model_params(args)
-    dvrl = DVRL(cifar10_train, cifar10_valid, dict_dvrl)
+    dvrl = DVRL(train_dataset, valid_dataset, dict_dvrl)
 
-    # train model
+    # 3 训练模型
+    print('start training.')
     dvrl.train()
 
-    # data valuation
-    dvrl.get_data_values(cifar10_train)
+    # 4 数据价值评价
+    print('data valuation.')
+    file_name = 'dvrl_' + args.data_name + '_train' +str(len()) + '_noise' + str(args.noise_rate) + '.json' if args.noise_rate > 0 else 'dvrl_' + args.data_name + '_train' +str(len(train_dataset)) + '.json'
+    dve_out = data_valuate(file_name, dvrl, train_dataset)
+    
+    # 5 可视化结果保存
+    print('visualization.')
+    figure_name = '.'.join(file_name.split('.')[:-1])
+    visualize_values(dve_out, train_dataset, valid_dataset, test_dataset, args.noise_rate, figure_name)
+
+    print('finished!')
 
 
 if __name__ == '__main__':
-    test()
+    main(args)

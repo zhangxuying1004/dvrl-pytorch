@@ -6,11 +6,11 @@ import os
 import copy
 from tqdm import tqdm
 import numpy as np
-import sklearn 
 
 from models.dve import DVE
 from models.predictor import Predictor
 from models.encoder import Encoder
+from utils import one_hot
 
 
 class DVRL(object):
@@ -18,6 +18,7 @@ class DVRL(object):
         # data
         self.train_dataset = train_dataset
         self.valid_dataset = valid_dataset
+        assert len(dict_dvrl) > 0
 
         # params
         self.dve_lr = dict_dvrl['dve_lr']
@@ -33,7 +34,7 @@ class DVRL(object):
         self.inner_iterations = dict_dvrl['inner_iterations']
 
         self.batch_size = dict_dvrl['batch_size']
-        self.batch_size_predictor = dict_dvrl['batch_size_predictor']
+        self.mini_batch_size = dict_dvrl['batch_size_predictor']
 
         # models
         self.dve_model = DVE(self.feat_dim, self.label_dim)
@@ -68,19 +69,25 @@ class DVRL(object):
         self.val_model = self.build_baseline(valid_dataset, self.val_baseline_checkpoint)
     
     def assert_dir(self, file_dir):
+        """
+        确保指定的文件夹存在
+        """
         if not os.path.exists(file_dir):
             os.makedirs(file_dir)
     
     def build_init_pred(self):
+        """
+        保存predictor模型的初始参数，确保后面训练的predictor模型的初始条件相同
+        """
         torch.save(self.pred_model.state_dict(), self.init_checkpoint)
-    
-    def one_hot(self, label, category_num=10):
-        out = torch.zeros(label.size(0), category_num).long()
-        idx = torch.unsqueeze(label, dim=1)
-        out.scatter_(dim=1, index=idx, value=1)
-        return out
         
     def build_baseline(self, dataset, baseline_checkpoint):
+        """
+        训练baseline predictor模型;
+        在dvrl中需要训练两个baseline，一个是在训练集上训练的predictor模型，一个是在验证上训练的predictor模型;
+        dataset: 训练集/验证集
+        baseline_checkpoint: baseline模型保存的路径
+        """
         model = copy.copy(self.pred_model)
         if os.path.exists(baseline_checkpoint):
             data = torch.load(baseline_checkpoint)
@@ -96,7 +103,7 @@ class DVRL(object):
             criterion = nn.CrossEntropyLoss()
             for x_batch, y_batch in dataloader:
                 """
-                x_batch: (batch, feat_dim)
+                x_batch: (batch, 3, 32, 32)
                 y_batch: (batch,)
                 """
                 y_pred_batch = model(x_batch)  # (batch, category_num)
@@ -111,12 +118,16 @@ class DVRL(object):
         return model.eval()
     
     def get_performance(self, model, dataset):
+        """
+        获取模型在指定数据集上的性能；
+        此处的模型是在训练集上训练的predictor模型，此处的数据集是验证集；此处的性能是预测准确率；
+        """
         dataloader = DataLoader(dataset, batch_size=self.batch_size)
         model.eval()
         total_num, correct_num = 0, 0
         for x_batch, y_batch in dataloader:
             """
-            x_batch: (batch, feat_dim)
+            x_batch: (batch, 3, 32, 32)
             y_batch: (batch,)
             """
             total_num += y_batch.shape[0]
@@ -128,7 +139,8 @@ class DVRL(object):
 
     def get_differences(self, model, dataset):
         """
-        获取
+        获取指定数据集上，模型的预测值与GT的差异；
+        此处的模型是在验证集上训练的predictor模型，此处的dataset是训练集；
         """
         y_pred_diff = []
         dataloader = DataLoader(dataset, batch_size=self.batch_size)
@@ -136,7 +148,7 @@ class DVRL(object):
         for x_batch, y_batch in dataloader:
             with torch.no_grad():
                 y_pred = model(x_batch)
-            target = self.one_hot(y_batch)
+            target = one_hot(y_batch)
             batch_pred_diff = torch.abs(target - y_pred)
             for i in batch_pred_diff.shape[0]:
                 y_pred_diff.append(batch_pred_diff[i])
@@ -162,7 +174,7 @@ class DVRL(object):
     def train_predictor(self, x_batch, y_batch, sample_weight):
         """
         使用batch_size个样本训练预测器模型，inner_iterations个epoch
-        x_batch: (batch_size, feat_dim)
+        x_batch: (batch_size, 3, 32, 32)
         y_batch: (batch_size, )
         sample_weight: (batch_size, )
         """
@@ -171,9 +183,14 @@ class DVRL(object):
         self.pred_model.load_state_dict(init_data)
         # train predictor model
         for _ in range(self.inner_iterations):
-            batch_idx_predictor = np.random.permutation(x_batch.shape[0])[:self.batch_size_predictor]
-            x_mini_batch, y_mini_batch = x_batch[batch_idx_predictor], y_batch[batch_idx_predictor]
-            x_masked_mini_batch = x_mini_batch * sample_weight
+            batch_idx_predictor = np.random.permutation(x_batch.shape[0])[:self.mini_batch_size]
+            x_mini_batch, y_mini_batch, weight_mini_batch = x_batch[batch_idx_predictor], y_batch[batch_idx_predictor], sample_weight[batch_idx_predictor]
+            """
+            x_mini_batch: (mini_batch_size, feat_dim)
+            y_mini_batch: (mini_batch_size, )
+            weight_mini_batch: (mini_batch_size, )
+            """
+            x_masked_mini_batch = x_mini_batch * weight_mini_batch
             y_pred_mini_batch = self.pred_model(x_masked_mini_batch)
     
             self.pred_optimizer.zero_grad()
@@ -190,8 +207,13 @@ class DVRL(object):
         ans = input if (input > other).item else other
         return ans
 
-    # 需要check一下torch函数的使用
     def rl_loss(self, s_input, est_data_value, reward_input):
+        """
+        计算数据价值估计器的rl loss
+        s_input:
+        est_data_value:
+        reward_input:
+        """
         prob = torch.sum(
             s_input * torch.log(est_data_value + self.epsilon) + (1 - s_input) * torch.log(1 - est_data_value + self.epsilon)
         )
@@ -199,6 +221,14 @@ class DVRL(object):
             1e3 * (self.get_maximum(torch.mean(est_data_value)-self.threshold, 0) + self.get_maximum(1-torch.mean(est_data_value)-self.threshold, 0))
 
     def train_dve(self, x_input, y_input, y_hat_input, s_input, reward_input):
+        """
+        训练数据价值估计器
+        x_input: (batch_size, feat_dim)
+        y_input: (batch_size, )
+        y_hat_input: (batch_size, category_num), the diff between val predictor and gt
+        s_input: (batch_size, ), sample weight
+        reward_input: 当前predictor与ori predictor在验证集上的性能差异，此处的两个preditor都是在训练集上训练的
+        """
         est_data_value = self.dve_model(x_input, y_input, y_hat_input)  # current data value
 
         self.dve_optimizer.zero_grad()
@@ -207,6 +237,9 @@ class DVRL(object):
         self.dve_optimizer.step()
 
     def train(self):
+        """
+        predictor和dve迭代训练
+        """
         # baseline preformance
         valid_perf = self.get_performance(self.ori_model, self.valid_dataset)
 
@@ -231,14 +264,20 @@ class DVRL(object):
             # train data value estimator with one iteration
             dvrl_perf = self.get_performance(self.pred_model, self.valid_dataset)
             reward_curr = dvrl_perf - valid_perf
-            self.train_dve(x_batch, y_batch, sel_prob_curr, reward_curr)
+            self.train_dve(x_batch, y_batch, y_hat_batch, sel_prob_curr, reward_curr)
         torch.save(self.dve_model.state_dict(), self.dve_checkpoint)
 
     def restore_dve(self):
+        """
+        加载训练好的数据价值估计器
+        """
         data = torch.load(self.dve_checkpoint)
         self.dve_model.load_state_dict(data)
 
     def get_data_values(self, dataset, mode='train'):
+        """
+        估计指定数据集中各个样本的价值
+        """
         if mode == 'infer':
             self.restore_dve()
         data_values = []
@@ -248,7 +287,7 @@ class DVRL(object):
         for x_batch, y_batch in dataloader:
             with torch.no_grad():
                 y_pred_batch = self.val_model(x_batch)
-            y_target_batch = self.one_hot(y_batch)
+            y_target_batch = one_hot(y_batch)
             y_hat_batch = torch.abs(y_target_batch - y_pred_batch)
             with torch.no_grad():
                 batch_values = self.dve_model(x_batch, y_batch, y_hat_batch)

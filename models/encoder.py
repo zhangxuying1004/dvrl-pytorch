@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from torchvision import models
 
@@ -10,17 +11,22 @@ class Encoder(nn.Module):
         self.input_shape = input_shape
 
         if architecture == 'inception_v3':
-            self.base_model = models.inception_v3(pretrained=True)
+            # self.base_model = models.inception_v3(pretrained=False)
+            # self.base_model = models.resnet18(pretrained=False)
+            self.base_model = models.resnet50(pretrained=False)
+            # self.base_model.load_state_dict(torch.load('./data_files/model_cache/inception_v3_google-1a9a5a14.pth'))
         self.encoder = nn.Sequential(
-            *list(self.base_model.children())[:-1],
-            nn.AdaptiveAvgPool2d(self.downsample_factor, self.downsample_factor)
+            *list(self.base_model.children())[:-2],
+            nn.AvgPool2d((self.downsample_factor, self.downsample_factor), stride=8)
         )
 
         for param in self.encoder.parameters():
             param.required_grad = False
 
     def forward(self, x):
-        x = x.resize(self.input_shape)
+        # print('x before: ', x.shape)
+        x = x.resize_(x.shape[0], x.shape[1], 299, 299)
+        # print('x after: ', x.shape)
         out = self.encoder(x)
         return out
     
